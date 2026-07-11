@@ -29,19 +29,19 @@ jobs:
       run: mkdir -p bin && mv server.exe server.exe.sha256 bin/
 
     - name: Upload to repository
-      uses: stefanzweifel/git-auto-commit-action@v5
+      uses: stefanzweifel/git-auto-commit-action@v7
       with:
         commit_message: "🔧 Build server.exe and generate SHA256"
         file_pattern: bin/server.exe bin/server.exe.sha256
 
     - name: Upload server.exe
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: server.exe
         path: bin/server.exe
 
     - name: Upload sha256
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: server.exe.sha256
         path: bin/server.exe.sha256

@@ -26,19 +26,19 @@ jobs:
       run: mkdir -p bin && mv server server.sha256 bin/
 
     - name: Upload to repository
-      uses: stefanzweifel/git-auto-commit-action@v5
+      uses: stefanzweifel/git-auto-commit-action@v7
       with:
         commit_message: "🐧 Build server (Linux) and generate SHA256"
         file_pattern: bin/server bin/server.sha256
 
     - name: Upload server
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: server
         path: bin/server
 
     - name: Upload sha256
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: server.sha256
         path: bin/server.sha256
