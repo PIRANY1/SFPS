@@ -1,0 +1,47 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'server.cpp'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build-windows:
+    name: Windows (cross-compile)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install MinGW
+      run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+    - name: Compile server.cpp to server.exe
+      run: x86_64-w64-mingw32-g++ -std=c++17 server.cpp -o server.exe -lws2_32
+
+    - name: Generate SHA256 checksum
+      run: sha256sum server.exe > server.exe.sha256
+
+    - name: Create bin folder
+      run: mkdir -p bin && mv server.exe server.exe.sha256 bin/
+
+    - name: Upload to repository
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "🔧 Build server.exe and generate SHA256"
+        file_pattern: bin/server.exe bin/server.exe.sha256
+
+    - name: Upload server.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: server.exe
+        path: bin/server.exe
+
+    - name: Upload sha256
+      uses: actions/upload-artifact@v4
+      with:
+        name: server.exe.sha256
+        path: bin/server.exe.sha256

@@ -1,0 +1,44 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Build Linux"]
+    types:
+      - completed
+
+jobs:
+  build-macos:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Compile server.cpp
+      run: clang++ -std=c++17 -Os -s server.cpp -o server
+
+    - name: Generate SHA256 checksum
+      run: shasum -a 256 server-macos > server-macos.sha256
+
+    - name: Create bin folder
+      run: mkdir -p bin && mv server-macos server-macos.sha256 bin/
+
+    - name: Upload to repository
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "🍎 Build server-macos and generate SHA256"
+        file_pattern: bin/server-macos bin/server-macos.sha256
+
+    - name: Upload server.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: server-macos
+        path: bin/server-macos
+
+    - name: Upload sha256
+      uses: actions/upload-artifact@v4
+      with:
+        name: server-macos.sha256
+        path: bin/server-macos.sha256

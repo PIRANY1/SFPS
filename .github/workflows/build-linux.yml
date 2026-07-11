@@ -1,0 +1,44 @@
+name: Build Linux
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Build Windows"]
+    types:
+      - completed
+
+jobs:
+  build-linux:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Compile server.cpp
+      run: |
+        gcc -std=c++17 -Os -s server.cpp -o server
+
+    - name: Generate SHA256 checksum
+      run: sha256sum server > server.sha256
+
+    - name: Create bin folder
+      run: mkdir -p bin && mv server server.sha256 bin/
+
+    - name: Upload to repository
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "🐧 Build server (Linux) and generate SHA256"
+        file_pattern: bin/server bin/server.sha256
+
+    - name: Upload server
+      uses: actions/upload-artifact@v4
+      with:
+        name: server
+        path: bin/server
+
+    - name: Upload sha256
+      uses: actions/upload-artifact@v4
+      with:
+        name: server.sha256
+        path: bin/server.sha256
