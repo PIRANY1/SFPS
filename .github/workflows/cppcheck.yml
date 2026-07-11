@@ -12,4 +12,4 @@ jobs:
         run: sudo apt-get install -y cppcheck
 
       - name: Run cppcheck
-        run: cppcheck --enable=all --inconclusive --std=c99 --quiet server.cpp
+        run: cppcheck --enable=all --inconclusive --std=c++17 --language=c++ --quiet server.cpp

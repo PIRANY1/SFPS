@@ -6,6 +6,9 @@ on:
     workflows: ["Build Windows"]
     types:
       - completed
+      
+permissions:
+  contents: write
 
 jobs:
   build-linux:
