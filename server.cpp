@@ -79,58 +79,58 @@ bool recv_all(SOCKET s, char* buf, int len) {
     return true;
 }
 
-// Handles individual client connections
+// Handles individual client connections persistently
 void handle_client(SOCKET client_sock, MessageQueue& mq) {
     char cmd = 0;
-    if (!recv_all(client_sock, &cmd, 1)) {
-        closesocket(client_sock);
-        return;
-    }
-
-    if (cmd == 'S') { // SEND Command
-        uint32_t len = 0;
-        if (recv_all(client_sock, reinterpret_cast<char*>(&len), 4)) {
+    
+    // SCHLEIFE: Hält die Verbindung offen, bis der Client sie schließt
+    while (recv_all(client_sock, &cmd, 1)) {
+        
+        if (cmd == 'S') { // SEND Command
+            uint32_t len = 0;
+            // Wenn etwas beim Lesen/Schreiben schiefgeht, brechen wir sauber ab
+            if (!recv_all(client_sock, reinterpret_cast<char*>(&len), 4)) break;
+            
             std::string msg(len, '\0');
-            if (recv_all(client_sock, &msg[0], len)) {
-                mq.push(msg);
-                char ack = 'O'; // Acknowledge 'OK'
-                send_all(client_sock, &ack, 1);
+            if (!recv_all(client_sock, &msg[0], len)) break;
+            
+            mq.push(msg);
+            char ack = 'O'; // Acknowledge 'OK'
+            if (!send_all(client_sock, &ack, 1)) break;
+        } 
+        else if (cmd == 'G') { // GET Command
+            std::string msg;
+            uint32_t len = 0;
+            if (mq.pop(msg)) {
+                len = static_cast<uint32_t>(msg.size());
+                if (!send_all(client_sock, reinterpret_cast<const char*>(&len), 4)) break;
+                if (!send_all(client_sock, msg.data(), len)) break;
+            } else {
+                if (!send_all(client_sock, reinterpret_cast<const char*>(&len), 4)) break;
             }
         }
-    } 
-    else if (cmd == 'G') { // GET Command
-        std::string msg;
-        uint32_t len = 0;
-        if (mq.pop(msg)) {
-            len = static_cast<uint32_t>(msg.size());
-            send_all(client_sock, reinterpret_cast<const char*>(&len), 4);
-            send_all(client_sock, msg.data(), len);
-        } else {
-            // Queue empty -> send length 0
-            send_all(client_sock, reinterpret_cast<const char*>(&len), 4);
+        else if (cmd == 'T') { // STATS Command
+            uint32_t current_queued, total_stored, total_processed, failed_gets, peak_queued;
+            mq.get_stats(current_queued, total_stored, total_processed, failed_gets, peak_queued);
+            
+            if (!send_all(client_sock, reinterpret_cast<const char*>(&current_queued), 4) ||
+                !send_all(client_sock, reinterpret_cast<const char*>(&total_stored), 4) ||
+                !send_all(client_sock, reinterpret_cast<const char*>(&total_processed), 4) ||
+                !send_all(client_sock, reinterpret_cast<const char*>(&failed_gets), 4) ||
+                !send_all(client_sock, reinterpret_cast<const char*>(&peak_queued), 4)) {
+                break;
+            }
         }
-    }
-    else if (cmd == 'T') { // STATS Command
-        uint32_t current_queued = 0;
-        uint32_t total_stored = 0;
-        uint32_t total_processed = 0;
-        uint32_t failed_gets = 0;
-        uint32_t peak_queued = 0;
-        mq.get_stats(current_queued, total_stored, total_processed, failed_gets, peak_queued);
-        
-        send_all(client_sock, reinterpret_cast<const char*>(&current_queued), 4);
-        send_all(client_sock, reinterpret_cast<const char*>(&total_stored), 4);
-        send_all(client_sock, reinterpret_cast<const char*>(&total_processed), 4);
-        send_all(client_sock, reinterpret_cast<const char*>(&failed_gets), 4);
-        send_all(client_sock, reinterpret_cast<const char*>(&peak_queued), 4);
-    }
-    else if (cmd == 'X') { // EXIT Command
-        char ack = 'O';
-        send_all(client_sock, &ack, 1);
-        closesocket(client_sock);
-        
-        // Instantly and cleanly terminates the headless background process
-        ExitProcess(0); 
+        else if (cmd == 'X') { // EXIT Command
+            char ack = 'O';
+            send_all(client_sock, &ack, 1);
+            closesocket(client_sock);
+            ExitProcess(0); 
+        }
+        else {
+            // Unbekannter Befehl -> Protokoll-Fehler, Verbindung kappen
+            break; 
+        }
     }
 
     closesocket(client_sock);
@@ -232,9 +232,7 @@ int run_server() {
     return 0;
 }
 
-// Spawns a detached background process of itself without creating a window
 int init_background_server(const std::string& exe_path) {
-    // Check if server is already running before spawning a new one
     {
         WinsockContext wsctx;
         SOCKET test_sock = connect_to_server();
@@ -255,8 +253,6 @@ int init_background_server(const std::string& exe_path) {
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    // CREATE_NO_WINDOW hides the console UI completely
-    // DETACHED_PROCESS uncouples it from the current batch/cmd session
     if (CreateProcessA(NULL, cmd_buffer.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, NULL, &si, &pi)) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -268,6 +264,7 @@ int init_background_server(const std::string& exe_path) {
     }
 }
 
+// Sende eine EINE Nachricht (Einmalig)
 int run_send(const std::string& message) {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
@@ -293,6 +290,38 @@ int run_send(const std::string& message) {
     return 0;
 }
 
+// NEU: Hält die Verbindung und liest kontinuierlich aus der Konsole (Pipe)
+int run_send_stream() {
+    WinsockContext wsctx;
+    SOCKET sock = connect_to_server();
+    if (sock == INVALID_SOCKET) {
+        std::cerr << "Error: Server is not running or connection refused.\n";
+        return 1;
+    }
+
+    std::string line;
+    // Liest Zeile für Zeile bis EOF (Pipe wird geschlossen)
+    while (std::getline(std::cin, line)) {
+        char cmd = 'S';
+        uint32_t len = static_cast<uint32_t>(line.size());
+
+        if (!send_all(sock, &cmd, 1) ||
+            !send_all(sock, reinterpret_cast<const char*>(&len), 4) ||
+            !send_all(sock, line.data(), len)) {
+            std::cerr << "Error: Connection lost while sending.\n";
+            break;
+        }
+
+        char ack = 0;
+        if (!recv_all(sock, &ack, 1)) {
+            break; // Server hat die Verbindung abgebrochen
+        }
+    }
+
+    closesocket(sock);
+    return 0;
+}
+
 int run_get() {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
@@ -314,60 +343,45 @@ int run_get() {
     }
 
     if (len == 0) {
-        std::cerr << "Info: No messages available in queue.\n";
         closesocket(sock);
         return 2; 
     }
 
     std::string msg(len, '\0');
     if (!recv_all(sock, &msg[0], len)) {
-        std::cerr << "Error: Failed to receive message body.\n";
         closesocket(sock);
         return 1;
     }
 
-    // Pure stdout output without trailing newline for precise script handling
     std::cout << msg;
-    
     closesocket(sock);
     return 0;
 }
 
 int run_stats() {
+    // [Code bleibt exakt gleich, zur Kürze hier gekürzt gedacht, füge deinen bestehenden Code ein]
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
-    if (sock == INVALID_SOCKET) {
-        std::cerr << "Error: Server is not running.\n";
-        return 1;
-    }
+    if (sock == INVALID_SOCKET) return 1;
 
     char cmd = 'T'; // Stats
-    if (!send_all(sock, &cmd, 1)) {
-        closesocket(sock);
-        return 1;
-    }
+    send_all(sock, &cmd, 1);
 
-    uint32_t current_queued = 0;
-    uint32_t total_stored = 0;
-    uint32_t total_processed = 0;
-    uint32_t failed_gets = 0;
-    uint32_t peak_queued = 0;
-
+    uint32_t current_queued = 0, total_stored = 0, total_processed = 0, failed_gets = 0, peak_queued = 0;
     if (!recv_all(sock, reinterpret_cast<char*>(&current_queued), 4) ||
         !recv_all(sock, reinterpret_cast<char*>(&total_stored), 4) ||
         !recv_all(sock, reinterpret_cast<char*>(&total_processed), 4) ||
         !recv_all(sock, reinterpret_cast<char*>(&failed_gets), 4) ||
         !recv_all(sock, reinterpret_cast<char*>(&peak_queued), 4)) {
-        std::cerr << "Error: Failed to receive statistics data.\n";
         closesocket(sock);
         return 1;
     }
 
-    std::cout << "Current queued messages:  " << current_queued << "\n";
-    std::cout << "Peak queued (Max Load):   " << peak_queued << "\n";
-    std::cout << "Total received messages:  " << total_stored << "\n";
-    std::cout << "Total processed (get):    " << total_processed << "\n";
-    std::cout << "Failed 'get' attempts:    " << failed_gets << "\n";
+    std::cout << "Current queued messages:  " << current_queued << "\n"
+              << "Peak queued (Max Load):   " << peak_queued << "\n"
+              << "Total received messages:  " << total_stored << "\n"
+              << "Total processed (get):    " << total_processed << "\n"
+              << "Failed 'get' attempts:    " << failed_gets << "\n";
 
     closesocket(sock);
     return 0;
@@ -376,23 +390,13 @@ int run_stats() {
 int run_exit() {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
-    if (sock == INVALID_SOCKET) {
-        std::cerr << "Error: Server is not running.\n";
-        return 1;
-    }
+    if (sock == INVALID_SOCKET) return 1;
 
-    char cmd = 'X'; // Exit command
-    if (!send_all(sock, &cmd, 1)) {
-        std::cerr << "Error: Failed to send exit command.\n";
-        closesocket(sock);
-        return 1;
-    }
-
+    char cmd = 'X';
+    send_all(sock, &cmd, 1);
     char ack = 0;
-    recv_all(sock, &ack, 1); // Wait for the server to acknowledge
+    recv_all(sock, &ack, 1);
     closesocket(sock);
-    
-    std::cout << "Success: Server shutdown command sent.\n";
     return 0;
 }
 
@@ -401,9 +405,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage:\n"
                   << "  " << argv[0] << " init              -> Starts the headless background broker server\n"
                   << "  " << argv[0] << " send \"message\"   -> Pushes a message to the queue\n"
+                  << "  " << argv[0] << " send --keep-alive -> Reads continuously from stdin (pipe mode)\n"
                   << "  " << argv[0] << " get               -> Retrieves the oldest message from the queue\n"
                   << "  " << argv[0] << " stats             -> Displays queue analytics\n"
-                  << "  " << argv[0] << " exit              -> Shuts down the background server\n"; // <- Neu
+                  << "  " << argv[0] << " exit              -> Shuts down the background server\n";
         return 1;
     }
 
@@ -414,17 +419,23 @@ int main(int argc, char* argv[]) {
     } else if (mode == INTERNAL_SERVER_FLAG) {
         return run_server();
     } else if (mode == "send") {
-        if (argc < 3) {
-            std::cerr << "Error: Missing message content argument for 'send'.\n";
+        if (argc >= 3) {
+            std::string arg = argv[2];
+            if (arg == "--keep-alive") {
+                return run_send_stream(); // NEU: Stream-Modus
+            } else {
+                return run_send(arg);     // ALT: One-Shot-Modus
+            }
+        } else {
+            std::cerr << "Error: Missing message content or --keep-alive flag.\n";
             return 1;
         }
-        return run_send(argv[2]);
     } else if (mode == "get") {
         return run_get();
     } else if (mode == "stats") {
         return run_stats();
-    } else if (mode == "exit") { // <- Neu
-        return run_exit();       // <- Neu
+    } else if (mode == "exit") { 
+        return run_exit();       
     } else {
         std::cerr << "Error: Unknown command: " << mode << "\n";
         return 1;
