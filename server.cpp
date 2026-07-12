@@ -10,6 +10,9 @@
 #include <thread>
 #include <vector>
 #include <cstdint>
+#include <chrono>   // NEU: Für die Zeitmessung
+#include <iomanip>  // NEU: Für die Formatierung (setfill, setw)
+#include <ctime>    // NEU: Für tm Struktur
 
 // Automatic linker directive for MSVC
 #pragma comment(lib, "Ws2_32.lib")
@@ -88,14 +91,13 @@ void handle_client(SOCKET client_sock, MessageQueue& mq) {
         
         if (cmd == 'S') { // SEND Command
             uint32_t len = 0;
-            // Wenn etwas beim Lesen/Schreiben schiefgeht, brechen wir sauber ab
             if (!recv_all(client_sock, reinterpret_cast<char*>(&len), 4)) break;
             
             std::string msg(len, '\0');
             if (!recv_all(client_sock, &msg[0], len)) break;
             
             mq.push(msg);
-            char ack = 'O'; // Acknowledge 'OK'
+            char ack = 'O'; 
             if (!send_all(client_sock, &ack, 1)) break;
         } 
         else if (cmd == 'G') { // GET Command
@@ -128,7 +130,6 @@ void handle_client(SOCKET client_sock, MessageQueue& mq) {
             ExitProcess(0); 
         }
         else {
-            // Unbekannter Befehl -> Protokoll-Fehler, Verbindung kappen
             break; 
         }
     }
@@ -264,7 +265,6 @@ int init_background_server(const std::string& exe_path) {
     }
 }
 
-// Sende eine EINE Nachricht (Einmalig)
 int run_send(const std::string& message) {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
@@ -290,7 +290,6 @@ int run_send(const std::string& message) {
     return 0;
 }
 
-// NEU: Hält die Verbindung und liest kontinuierlich aus der Konsole (Pipe)
 int run_send_stream() {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
@@ -300,7 +299,6 @@ int run_send_stream() {
     }
 
     std::string line;
-    // Liest Zeile für Zeile bis EOF (Pipe wird geschlossen)
     while (std::getline(std::cin, line)) {
         char cmd = 'S';
         uint32_t len = static_cast<uint32_t>(line.size());
@@ -314,7 +312,7 @@ int run_send_stream() {
 
         char ack = 0;
         if (!recv_all(sock, &ack, 1)) {
-            break; // Server hat die Verbindung abgebrochen
+            break; 
         }
     }
 
@@ -322,7 +320,8 @@ int run_send_stream() {
     return 0;
 }
 
-int run_get() {
+// NEU: Hat nun den booleschen Parameter prepend_time
+int run_get(bool prepend_time) {
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
     if (sock == INVALID_SOCKET) {
@@ -343,6 +342,7 @@ int run_get() {
     }
 
     if (len == 0) {
+        // Optionale Info für stderr, wenn gewünscht. Ansonsten stumm.
         closesocket(sock);
         return 2; 
     }
@@ -353,18 +353,35 @@ int run_get() {
         return 1;
     }
 
-    std::cout << msg;
+    // NEU: Prüfen, ob die Zeit davor gehängt werden soll
+    if (prepend_time) {
+        // Aktuelle lokale Systemzeit holen
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+        
+        struct tm timeinfo;
+        localtime_s(&timeinfo, &now_time); // Thread-safe Variante von localtime für Windows
+
+        // Zeit formatieren: "HH:MM:SS - " + Nachricht
+        std::cout << std::setfill('0') << std::setw(2) << timeinfo.tm_hour << ":"
+                  << std::setfill('0') << std::setw(2) << timeinfo.tm_min << ":"
+                  << std::setfill('0') << std::setw(2) << timeinfo.tm_sec << " - " 
+                  << msg;
+    } else {
+        // Originales Verhalten
+        std::cout << msg;
+    }
+
     closesocket(sock);
     return 0;
 }
 
 int run_stats() {
-    // [Code bleibt exakt gleich, zur Kürze hier gekürzt gedacht, füge deinen bestehenden Code ein]
     WinsockContext wsctx;
     SOCKET sock = connect_to_server();
     if (sock == INVALID_SOCKET) return 1;
 
-    char cmd = 'T'; // Stats
+    char cmd = 'T'; 
     send_all(sock, &cmd, 1);
 
     uint32_t current_queued = 0, total_stored = 0, total_processed = 0, failed_gets = 0, peak_queued = 0;
@@ -406,7 +423,7 @@ int main(int argc, char* argv[]) {
                   << "  " << argv[0] << " init              -> Starts the headless background broker server\n"
                   << "  " << argv[0] << " send \"message\"   -> Pushes a message to the queue\n"
                   << "  " << argv[0] << " send --keep-alive -> Reads continuously from stdin (pipe mode)\n"
-                  << "  " << argv[0] << " get               -> Retrieves the oldest message from the queue\n"
+                  << "  " << argv[0] << " get [-t|--time]   -> Retrieves oldest message (opt. with timestamp)\n"
                   << "  " << argv[0] << " stats             -> Displays queue analytics\n"
                   << "  " << argv[0] << " exit              -> Shuts down the background server\n";
         return 1;
@@ -422,16 +439,24 @@ int main(int argc, char* argv[]) {
         if (argc >= 3) {
             std::string arg = argv[2];
             if (arg == "--keep-alive") {
-                return run_send_stream(); // NEU: Stream-Modus
+                return run_send_stream(); 
             } else {
-                return run_send(arg);     // ALT: One-Shot-Modus
+                return run_send(arg);     
             }
         } else {
             std::cerr << "Error: Missing message content or --keep-alive flag.\n";
             return 1;
         }
     } else if (mode == "get") {
-        return run_get();
+        // NEU: Check ob ein drittes Argument existiert und ein Time-Flag ist
+        bool prepend_time = false;
+        if (argc >= 3) {
+            std::string arg = argv[2];
+            if (arg == "-t" || arg == "--time") {
+                prepend_time = true;
+            }
+        }
+        return run_get(prepend_time);
     } else if (mode == "stats") {
         return run_stats();
     } else if (mode == "exit") { 
